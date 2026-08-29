@@ -3,6 +3,7 @@ import type {
   MessageCreateParamsStreaming,
   MessageParam,
 } from "@anthropic-ai/sdk/resources/messages";
+import type { ChatImage } from "@/lib/chat-request";
 
 const MODEL = "claude-sonnet-5";
 const MAX_TOKENS = 1024;
@@ -16,6 +17,7 @@ export const MAX_HISTORY_MESSAGES = 20;
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
+  images?: ChatImage[];
 }
 
 // Pure: keeps only the most recent `limit` messages, preserving order.
@@ -24,6 +26,28 @@ export function takeRecentHistory(
   limit: number = MAX_HISTORY_MESSAGES
 ): ChatMessage[] {
   return limit <= 0 ? [] : messages.slice(-limit);
+}
+
+// Converts one chat message to the Anthropic content shape: plain text when
+// there are no images, otherwise a content block array (text block first,
+// then one image block per attachment) as required by the Messages API's
+// multimodal format.
+function toApiContent(m: ChatMessage): MessageParam["content"] {
+  if (!m.images || m.images.length === 0) {
+    return m.content;
+  }
+
+  return [
+    ...(m.content ? [{ type: "text" as const, text: m.content }] : []),
+    ...m.images.map((image) => ({
+      type: "image" as const,
+      source: {
+        type: "base64" as const,
+        media_type: image.mediaType,
+        data: image.data,
+      },
+    })),
+  ];
 }
 
 // Pure: builds the request payload sent to the Anthropic Messages API.
@@ -35,7 +59,7 @@ export function buildMessageRequest(
     max_tokens: MAX_TOKENS,
     stream: true,
     messages: messages.map(
-      (m): MessageParam => ({ role: m.role, content: m.content })
+      (m): MessageParam => ({ role: m.role, content: toApiContent(m) })
     ),
   };
 }

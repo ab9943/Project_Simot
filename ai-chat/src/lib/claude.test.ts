@@ -63,6 +63,58 @@ describe("buildMessageRequest", () => {
     const request = buildMessageRequest([]);
     expect(request.messages).toEqual([]);
   });
+
+  it("converts a message with images into text + image content blocks", () => {
+    const request = buildMessageRequest([
+      {
+        role: "user",
+        content: "이 사진 봐줘",
+        images: [{ mediaType: "image/png", data: "aGVsbG8=" }],
+      },
+    ]);
+
+    expect(request.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "이 사진 봐줘" },
+          {
+            type: "image",
+            source: { type: "base64", media_type: "image/png", data: "aGVsbG8=" },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("omits the text block when an image-only message has no text", () => {
+    const request = buildMessageRequest([
+      {
+        role: "user",
+        content: "",
+        images: [{ mediaType: "image/jpeg", data: "aGVsbG8=" }],
+      },
+    ]);
+
+    expect(request.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          {
+            type: "image",
+            source: { type: "base64", media_type: "image/jpeg", data: "aGVsbG8=" },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("keeps plain string content for messages with no images", () => {
+    const request = buildMessageRequest([
+      { role: "user", content: "hi", images: [] },
+    ]);
+    expect(request.messages).toEqual([{ role: "user", content: "hi" }]);
+  });
 });
 
 describe("takeRecentHistory", () => {

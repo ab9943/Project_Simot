@@ -15,6 +15,9 @@ export default async function Home() {
     initialMessages = history.map((entry) => ({
       role: entry.role as ChatMessage["role"],
       content: entry.content as string,
+      images: (entry.images as ChatMessage["images"])?.length
+        ? (entry.images as ChatMessage["images"])
+        : undefined,
     }));
   } catch (error) {
     console.error("Failed to load conversation history", error);

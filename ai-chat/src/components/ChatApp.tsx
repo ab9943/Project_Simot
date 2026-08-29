@@ -1,12 +1,38 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+// Chat images are base64 data URIs / blob: preview URLs, not static assets —
+// next/image's optimizer doesn't apply here, so plain <img> is intentional.
+/* eslint-disable @next/next/no-img-element */
+
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type ClipboardEvent,
+  type DragEvent,
+  type FormEvent,
+} from "react";
 import Markdown from "react-markdown";
-import { MAX_MESSAGE_LENGTH } from "@/lib/chat-request";
+import {
+  ALLOWED_IMAGE_MEDIA_TYPES,
+  MAX_IMAGES_PER_MESSAGE,
+  MAX_IMAGE_BYTES,
+  MAX_MESSAGE_LENGTH,
+  type ChatImage,
+  type ImageMediaType,
+} from "@/lib/chat-request";
 
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
+  images?: ChatImage[];
+}
+
+interface PendingAttachment {
+  id: string;
+  file: File;
+  previewUrl: string;
 }
 
 interface ChatAppProps {
@@ -14,14 +40,37 @@ interface ChatAppProps {
   initialMessages: ChatMessage[];
 }
 
+function isAcceptedImageType(type: string): type is ImageMediaType {
+  return (ALLOWED_IMAGE_MEDIA_TYPES as readonly string[]).includes(type);
+}
+
+// Reads a File as a base64 string (no "data:...;base64," prefix), matching
+// the ChatImage shape the /api/chat route expects.
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      resolve(result.slice(result.indexOf(",") + 1));
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
 export default function ChatApp({ sessionId, initialMessages }: ChatAppProps) {
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [input, setInput] = useState("");
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [failedMessage, setFailedMessage] = useState<string | null>(null);
+  const [failedSend, setFailedSend] = useState<{
+    text: string;
+    images: ChatImage[];
+  } | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
@@ -39,9 +88,93 @@ export default function ChatApp({ sessionId, initialMessages }: ChatAppProps) {
     });
   }
 
-  async function sendMessage(text: string) {
+  // Validates and stages files for attachment, revoking preview URLs for
+  // anything that gets dropped once MAX_IMAGES_PER_MESSAGE is exceeded.
+  function addFiles(files: File[]) {
+    const accepted: File[] = [];
+    for (const file of files) {
+      if (!isAcceptedImageType(file.type)) {
+        setError(`지원하지 않는 이미지 형식입니다: ${file.name}`);
+        continue;
+      }
+      if (file.size > MAX_IMAGE_BYTES) {
+        setError(
+          `이미지는 최대 ${MAX_IMAGE_BYTES / (1024 * 1024)}MB까지 첨부할 수 있습니다.`
+        );
+        continue;
+      }
+      accepted.push(file);
+    }
+    if (accepted.length === 0) return;
+
+    setAttachments((prev) => {
+      const next = [
+        ...prev,
+        ...accepted.map((file) => ({
+          id:
+            typeof crypto.randomUUID === "function"
+              ? crypto.randomUUID()
+              : `${Date.now()}-${Math.random()}`,
+          file,
+          previewUrl: URL.createObjectURL(file),
+        })),
+      ];
+      if (next.length > MAX_IMAGES_PER_MESSAGE) {
+        setError(
+          `이미지는 메시지당 최대 ${MAX_IMAGES_PER_MESSAGE}장까지 첨부할 수 있습니다.`
+        );
+        next
+          .slice(MAX_IMAGES_PER_MESSAGE)
+          .forEach((a) => URL.revokeObjectURL(a.previewUrl));
+        return next.slice(0, MAX_IMAGES_PER_MESSAGE);
+      }
+      return next;
+    });
+  }
+
+  function removeAttachment(id: string) {
+    setAttachments((prev) => {
+      const target = prev.find((a) => a.id === id);
+      if (target) URL.revokeObjectURL(target.previewUrl);
+      return prev.filter((a) => a.id !== id);
+    });
+  }
+
+  function clearAttachments() {
+    setAttachments((prev) => {
+      prev.forEach((a) => URL.revokeObjectURL(a.previewUrl));
+      return [];
+    });
+  }
+
+  function handleFileInputChange(event: ChangeEvent<HTMLInputElement>) {
+    if (event.target.files) addFiles(Array.from(event.target.files));
+    event.target.value = "";
+  }
+
+  function handleDrop(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const files = Array.from(event.dataTransfer.files).filter((f) =>
+      f.type.startsWith("image/")
+    );
+    if (files.length > 0) addFiles(files);
+  }
+
+  function handleDragOver(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+  }
+
+  function handlePaste(event: ClipboardEvent<HTMLInputElement>) {
+    const files = Array.from(event.clipboardData?.items ?? [])
+      .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+      .map((item) => item.getAsFile())
+      .filter((f): f is File => f !== null);
+    if (files.length > 0) addFiles(files);
+  }
+
+  async function sendMessage(text: string, images: ChatImage[]) {
     setError(null);
-    setFailedMessage(null);
+    setFailedSend(null);
     setIsStreaming(true);
 
     const controller = new AbortController();
@@ -49,7 +182,7 @@ export default function ChatApp({ sessionId, initialMessages }: ChatAppProps) {
 
     setMessages((prev) => [
       ...prev,
-      { role: "user", content: text },
+      { role: "user", content: text, images: images.length ? images : undefined },
       { role: "assistant", content: "" },
     ]);
 
@@ -57,7 +190,11 @@ export default function ChatApp({ sessionId, initialMessages }: ChatAppProps) {
       const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, message: text }),
+        body: JSON.stringify(
+          images.length > 0
+            ? { sessionId, message: text, images }
+            : { sessionId, message: text }
+        ),
         signal: controller.signal,
       });
 
@@ -86,7 +223,7 @@ export default function ChatApp({ sessionId, initialMessages }: ChatAppProps) {
       } else {
         dropEmptyAssistantPlaceholder();
         setError("메시지를 보내는 중 오류가 발생했습니다. 다시 시도해주세요.");
-        setFailedMessage(text);
+        setFailedSend({ text, images });
       }
     } finally {
       setIsStreaming(false);
@@ -94,12 +231,24 @@ export default function ChatApp({ sessionId, initialMessages }: ChatAppProps) {
     }
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (isStreaming) return;
+
     const text = input.trim();
-    if (!text || isStreaming) return;
+    if (!text && attachments.length === 0) return;
+
+    const staged = attachments;
     setInput("");
-    void sendMessage(text);
+    clearAttachments();
+
+    const images: ChatImage[] = await Promise.all(
+      staged.map(async (a) => ({
+        mediaType: a.file.type as ImageMediaType,
+        data: await fileToBase64(a.file),
+      }))
+    );
+    void sendMessage(text, images);
   }
 
   function handleStop() {
@@ -107,14 +256,14 @@ export default function ChatApp({ sessionId, initialMessages }: ChatAppProps) {
   }
 
   function handleRetry() {
-    if (!failedMessage) return;
-    void sendMessage(failedMessage);
+    if (!failedSend) return;
+    void sendMessage(failedSend.text, failedSend.images);
   }
 
   async function handleNewConversation() {
     if (isStreaming) return;
     setError(null);
-    setFailedMessage(null);
+    setFailedSend(null);
     try {
       const response = await fetch("/api/chat", { method: "DELETE" });
       if (!response.ok) throw new Error("failed to clear conversation");
@@ -124,8 +273,14 @@ export default function ChatApp({ sessionId, initialMessages }: ChatAppProps) {
     }
   }
 
+  const canSend = (input.trim() !== "" || attachments.length > 0) && !isStreaming;
+
   return (
-    <div className="flex h-full w-full max-w-2xl flex-1 flex-col gap-4 p-4">
+    <div
+      onDrop={handleDrop}
+      onDragOver={handleDragOver}
+      className="flex h-full w-full max-w-2xl flex-1 flex-col gap-4 p-4"
+    >
       <div className="flex items-center justify-between">
         <h1 className="text-sm font-medium text-gray-500 dark:text-gray-400">
           AI Chat
@@ -146,7 +301,7 @@ export default function ChatApp({ sessionId, initialMessages }: ChatAppProps) {
       >
         {messages.length === 0 && (
           <p className="mt-8 text-center text-sm text-gray-400">
-            메시지를 보내 대화를 시작하세요.
+            메시지를 보내 대화를 시작하세요. 이미지를 첨부할 수도 있습니다.
           </p>
         )}
         {messages.map((m, i) => (
@@ -159,6 +314,18 @@ export default function ChatApp({ sessionId, initialMessages }: ChatAppProps) {
                 : "self-start bg-gray-100 text-gray-900 dark:bg-gray-800 dark:text-gray-100"
             }`}
           >
+            {m.images && m.images.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-2">
+                {m.images.map((img, idx) => (
+                  <img
+                    key={idx}
+                    src={`data:${img.mediaType};base64,${img.data}`}
+                    alt="첨부 이미지"
+                    className="h-24 w-24 rounded-lg border border-white/20 object-cover"
+                  />
+                ))}
+              </div>
+            )}
             {m.content ? (
               m.role === "assistant" ? (
                 <div className="prose prose-sm max-w-none prose-p:leading-normal dark:prose-invert [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
@@ -179,7 +346,7 @@ export default function ChatApp({ sessionId, initialMessages }: ChatAppProps) {
       {error && (
         <p className="text-sm text-red-500">
           {error}
-          {failedMessage && (
+          {failedSend && (
             <button
               type="button"
               onClick={handleRetry}
@@ -191,11 +358,52 @@ export default function ChatApp({ sessionId, initialMessages }: ChatAppProps) {
         </p>
       )}
 
+      {attachments.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {attachments.map((a) => (
+            <div key={a.id} className="relative">
+              <img
+                src={a.previewUrl}
+                alt={a.file.name}
+                className="h-16 w-16 rounded-lg object-cover"
+              />
+              <button
+                type="button"
+                onClick={() => removeAttachment(a.id)}
+                aria-label="이미지 제거"
+                className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-gray-700 text-xs text-white"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       <form onSubmit={handleSubmit} className="flex gap-2">
+        <input
+          ref={fileInputRef}
+          type="file"
+          data-testid="image-file-input"
+          accept={ALLOWED_IMAGE_MEDIA_TYPES.join(",")}
+          multiple
+          onChange={handleFileInputChange}
+          className="hidden"
+        />
+        <button
+          type="button"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={isStreaming || attachments.length >= MAX_IMAGES_PER_MESSAGE}
+          aria-label="이미지 첨부"
+          className="rounded-full border border-gray-300 px-3 py-2 text-gray-500 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700"
+        >
+          📎
+        </button>
         <input
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
+          onPaste={handlePaste}
           placeholder="메시지를 입력하세요"
           disabled={isStreaming}
           maxLength={MAX_MESSAGE_LENGTH}
@@ -212,7 +420,7 @@ export default function ChatApp({ sessionId, initialMessages }: ChatAppProps) {
         ) : (
           <button
             type="submit"
-            disabled={!input.trim()}
+            disabled={!canSend}
             className="rounded-full bg-blue-600 px-5 py-2 font-medium text-white disabled:cursor-not-allowed disabled:opacity-50"
           >
             전송
