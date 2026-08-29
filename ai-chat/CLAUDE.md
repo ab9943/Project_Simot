@@ -30,7 +30,7 @@ Run all commands from inside `ai-chat/`.
 
 - `src/lib/claude.ts` — wraps `@anthropic-ai/sdk`; builds the message request and returns a stream of response chunks. Pure/testable logic (message formatting, etc.) lives here, separate from the route handler.
 - `src/lib/db.ts` — MongoDB/Mongoose connection singleton. Reuses the connection across hot reloads in dev (cache the connection on `global` to avoid exhausting connections on every file change).
-- `src/models/Message.ts` — Mongoose schema for one chat message: `{ sessionId, role ("user" | "assistant"), content, createdAt }`.
+- `src/models/Message.ts` — Mongoose schema for one chat message: `{ sessionId, role ("user" | "assistant"), content, images?, createdAt }`. `images` (user messages only) stores attached images inline as base64 (`{ mediaType, data }`) rather than in object storage — see TODO.md 11단계 for why.
 - `src/lib/session.ts` — reads/generates the anonymous session ID stored in a cookie; this ID is the only thing that scopes a conversation to a visitor.
 - `src/app/api/chat/route.ts` — `POST` handler: receives `{ sessionId, message }`, saves the user message to MongoDB, calls `src/lib/claude.ts` to stream Claude's reply back to the client (`ReadableStream`), then saves the complete assistant message to MongoDB once the stream finishes.
 - `src/components/ChatApp.tsx` — the single `"use client"` component. Owns UI state, sends messages to `/api/chat`, and renders tokens as they stream in.

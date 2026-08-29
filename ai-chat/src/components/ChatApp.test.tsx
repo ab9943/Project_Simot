@@ -169,4 +169,69 @@ describe("ChatApp", () => {
     const input = screen.getByPlaceholderText("메시지를 입력하세요");
     expect(input).toHaveAttribute("maxlength", String(MAX_MESSAGE_LENGTH));
   });
+
+  it("previews an attached image and allows removing it before sending", async () => {
+    const user = userEvent.setup();
+    render(<ChatApp sessionId="s1" initialMessages={[]} />);
+
+    const file = new File(["fake-image-bytes"], "photo.png", { type: "image/png" });
+    const fileInput = screen.getByTestId("image-file-input");
+    await user.upload(fileInput, file);
+
+    expect(await screen.findByAltText("photo.png")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "이미지 제거" }));
+    expect(screen.queryByAltText("photo.png")).not.toBeInTheDocument();
+  });
+
+  it("sends a message with an attached image encoded as base64", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn().mockResolvedValue(fakeStreamResponse(["ok"]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ChatApp sessionId="s1" initialMessages={[]} />);
+
+    const file = new File(["hello"], "photo.png", { type: "image/png" });
+    await user.upload(screen.getByTestId("image-file-input"), file);
+    await screen.findByAltText("photo.png");
+
+    await user.type(screen.getByPlaceholderText("메시지를 입력하세요"), "이 사진 봐줘");
+    await user.click(screen.getByRole("button", { name: "전송" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalled();
+    });
+
+    const [, init] = fetchMock.mock.calls[0];
+    const sentBody = JSON.parse(init.body as string);
+    expect(sentBody.sessionId).toBe("s1");
+    expect(sentBody.message).toBe("이 사진 봐줘");
+    expect(sentBody.images).toHaveLength(1);
+    expect(sentBody.images[0].mediaType).toBe("image/png");
+    expect(typeof sentBody.images[0].data).toBe("string");
+
+    // The optimistic user bubble should render the attached image.
+    expect(await screen.findAllByAltText("첨부 이미지")).toHaveLength(1);
+  });
+
+  it("allows sending an image with no text", async () => {
+    const user = userEvent.setup();
+    const fetchMock = vi.fn().mockResolvedValue(fakeStreamResponse(["ok"]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<ChatApp sessionId="s1" initialMessages={[]} />);
+
+    const file = new File(["hello"], "photo.png", { type: "image/png" });
+    await user.upload(screen.getByTestId("image-file-input"), file);
+    await screen.findByAltText("photo.png");
+
+    expect(screen.getByRole("button", { name: "전송" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "전송" }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalled();
+    });
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init.body as string).message).toBe("");
+  });
 });

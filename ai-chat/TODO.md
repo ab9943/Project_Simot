@@ -121,3 +121,19 @@
 - [x] `README.md`가 기본 템플릿 그대로 방치 — 프로젝트 설명, 환경 변수 표, 스크립트 표로 재작성
 
 검증: `npx tsc --noEmit`, `npm run lint`, `npm test`(5개 테스트 파일, 44개 테스트) 모두 통과. `npm run build` 프로덕션 빌드도 성공 확인.
+
+## 11단계 — 이미지 첨부(멀티모달) 지원 (GitHub Issue #2)
+
+`ai-chat`은 텍스트 전용이었으나, Claude API의 이미지 입력(멀티모달)을 활용해 사용자가 채팅에 이미지를 첨부할 수 있도록 확장.
+
+- [x] **저장 방식 결정**: MongoDB에 base64로 직접 저장 (오브젝트 스토리지 대신). 이유 — 메시지 한 건이 이미 컬렉션의 독립된 도큐먼트이므로(대화 전체가 아니라 메시지 하나가 16MB 제한의 단위), `chat-request.ts`의 크기 제한(이미지당 5MB, 메시지당 합계 10MB 디코딩 기준)만 지키면 MongoDB 16MB/document 한도에 여유 있게 들어옴. GCS 버킷 + 서비스 계정 권한 설정 같은 추가 인프라 작업 없이 기존 Atlas 인스턴스만으로 구현 가능. 이미지 볼륨이 커지면(다중 세션, 장기 보관 등) 버킷+URL 방식으로 마이그레이션을 재검토할 것.
+- [x] **제한값 결정**: 허용 포맷 `image/jpeg`, `image/png`, `image/gif`, `image/webp` (Anthropic Messages API 지원 포맷), 메시지당 최대 4장, 이미지당 최대 5MB, 메시지당 합계 최대 10MB — `src/lib/chat-request.ts`의 `ALLOWED_IMAGE_MEDIA_TYPES` / `MAX_IMAGES_PER_MESSAGE` / `MAX_IMAGE_BYTES` / `MAX_TOTAL_IMAGE_BYTES`로 코드 전체(클라이언트 입력 제한, 서버 검증, `Message` 스키마)가 공유.
+- [x] `src/lib/claude.ts` — `ChatMessage`에 `images?: ChatImage[]` 추가, `buildMessageRequest`가 이미지가 있으면 텍스트+이미지 콘텐츠 블록 배열로 변환하도록 확장 (`claude.test.ts`로 검증).
+- [x] `src/lib/chat-request.ts` — `validateChatRequest`에 이미지 개수/포맷/base64 형식/용량(개별+합계) 검증 추가. 텍스트 없이 이미지만 있는 메시지도 허용하도록 "메시지 필수" 규칙을 "텍스트 또는 이미지 중 하나는 필수"로 변경 (`chat-request.test.ts`로 검증).
+- [x] `src/models/Message.ts` — `images` 서브도큐먼트 배열 필드 추가 (허용 포맷 enum, 개수 상한 검증). 기존에 `required: true`였던 `content`를 이미지만 있는 메시지를 허용하도록 완화.
+- [x] `src/app/api/chat/route.ts` — 사용자 메시지 저장/히스토리 조회 시 `images` 포함하여 Claude 컨텍스트로 전달.
+- [x] `src/components/ChatApp.tsx` — 파일 선택 버튼, 드래그앤드롭, 붙여넣기로 이미지 첨부, 전송 전 썸네일 미리보기 및 개별 제거, 개수/용량 초과 시 에러 메시지, 대화 이력에 첨부 이미지 렌더링 (`ChatApp.test.tsx`로 검증).
+- [x] `src/app/page.tsx` — 세션 히스토리 로드 시 `images` 포함하도록 매핑.
+- [ ] **후속 검토 (범위 밖)**: 히스토리 truncation(`takeRecentHistory`)이 이미지 포함 메시지의 토큰/비용에 미치는 영향은 별도 이슈로 추적 필요 — 현재는 `MAX_HISTORY_MESSAGES`(20개) 안에 이미지가 여러 장 포함된 메시지가 여럿 있으면 요청 토큰 비용이 크게 늘 수 있음.
+
+검증 방법: `npm ci`/`npm run lint`/`npx tsc --noEmit`/`npm test`를 CI 환경(GitHub Actions에서 트리거된 이 작업)에서 직접 실행할 셸 권한이 없어 로컬 실행으로 확인하지 못함 — PR CI 또는 로컬에서 실행 확인 필요.

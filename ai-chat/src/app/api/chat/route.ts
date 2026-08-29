@@ -23,7 +23,7 @@ export async function POST(request: NextRequest) {
   if (!validation.ok) {
     return Response.json({ error: validation.error }, { status: 400 });
   }
-  const { sessionId, message } = validation;
+  const { sessionId, message, images } = validation;
 
   if (!chatRateLimiter.check(sessionId)) {
     return Response.json(
@@ -42,7 +42,12 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    await Message.create({ sessionId, role: "user", content: message });
+    await Message.create({
+      sessionId,
+      role: "user",
+      content: message,
+      images: images.length > 0 ? images : undefined,
+    });
   } catch (error) {
     console.error("Failed to save user message", error);
     return Response.json({ error: "Failed to save message" }, { status: 500 });
@@ -62,6 +67,9 @@ export async function POST(request: NextRequest) {
     history.map((entry) => ({
       role: entry.role as ChatMessage["role"],
       content: entry.content as string,
+      images: (entry.images as ChatMessage["images"])?.length
+        ? (entry.images as ChatMessage["images"])
+        : undefined,
     }))
   );
 
