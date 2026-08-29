@@ -71,10 +71,16 @@
   - `Dockerfile`, `.dockerignore` 추가 (멀티스테이지, Cloud Run이 주입하는 `PORT`를 사용)
   - `.github/workflows/deploy-ai-chat.yml` 추가 — `master`에서 `ai-chat/**` 변경 시 Artifact Registry로 이미지 빌드/푸시 후 Cloud Run 배포. `google-github-actions/auth`(Workload Identity Federation, 키 파일 없음)로 인증
   - `deploy/setup-gcp.sh` 추가 — GCP 쪽 1회성 셋업(API 활성화, Artifact Registry 저장소, 배포용 서비스 계정 + IAM, Secret Manager에 `ANTHROPIC_API_KEY`/`MONGODB_URI` 저장, Workload Identity Pool/Provider를 이 GitHub 저장소로 제한)을 자동화. `gcloud auth login`이 필요한 대화형 로그인이 껴 있어 에이전트가 대신 실행할 수 없음 — 사용자가 직접 실행해야 함
-- [ ] **(사용자 액션 필요)** `deploy/setup-gcp.sh` 실행 — 로컬에 `gcloud` CLI 설치(`winget install Google.CloudSDK`) 후 `gcloud auth login`, 또는 GCP Console의 Cloud Shell(사전 인증됨)에서 실행
-- [ ] **(사용자 액션 필요)** 스크립트 출력의 `GCP_WORKLOAD_IDENTITY_PROVIDER` 값을 GitHub 저장소(`ab9943/Project_Simot`)의 Actions 변수로 등록
-- [ ] 위 두 단계 완료 후, `ai-chat/`의 현재 미커밋 변경사항을 커밋 + `master` 푸시 → GitHub Actions 최초 배포 트리거 (에이전트가 커밋/푸시 직전에 사용자 확인을 받을 것)
-- [ ] 최초 배포 후 Cloud Run 서비스 URL로 실제 헬스체크(메시지 전송 1회) 확인
+- [x] `deploy/setup-gcp.sh` 실행 (사용자가 직접: `winget install Google.CloudSDK` → `gcloud auth login` → 스크립트 실행). 진행 중 겪은 문제와 수정 사항:
+  - Git Bash에서 확장자 없는 `gcloud` 파일이 `gcloud.cmd`보다 먼저 잡혀 실행이 깨짐 → 스크립트가 `gcloud.cmd`를 우선 사용하도록 수정 (`Makefile`도 동일하게 수정)
+  - `--description`/`--display-name`에 공백이 들어간 값을 쓰면 이 Windows 환경의 `gcloud.cmd` 인용 처리에서 깨짐 → 공백 없는 값으로 전부 교체
+  - 서비스 계정 생성 직후 바로 `add-iam-policy-binding`을 호출하면 IAM 전파 지연으로 "does not exist" 에러 발생 → 역할 부여 루프에 재시도(10초 간격, 최대 6회) 추가
+  - 최종적으로 Artifact Registry 저장소, `github-actions-deployer` 서비스 계정 + IAM, Secret Manager의 `ANTHROPIC_API_KEY`/`MONGODB_URI`, Workload Identity Pool/Provider(이 저장소로 제한)까지 전부 정상 생성됨을 확인
+- [x] `GCP_WORKLOAD_IDENTITY_PROVIDER` (`projects/511607687378/locations/global/workloadIdentityPools/github-pool/providers/github-provider`)를 `gh variable set`으로 GitHub 저장소(`ab9943/Project_Simot`) Actions 변수에 등록
+- [x] MongoDB Atlas Network Access에 `0.0.0.0/0` 추가 (Cloud Run은 고정 아웃바운드 IP가 없어서 필요 — 사용자가 직접 Atlas 콘솔에서 추가)
+- [x] `ai-chat/`을 처음으로 커밋 + `master` 푸시 (커밋 `7e0b612`) — 이번이 이 디렉터리의 첫 커밋이었음. 저장소 루트의 무관한 변경사항(`CLAUDE.md` 수정, `.serena/`, `todo-next/`)은 스테이징에서 제외
+- [x] 푸시로 트리거된 GitHub Actions 워크플로(`33232698663`)가 1분 50초만에 전체 성공 (이미지 빌드 → Artifact Registry 푸시 → Cloud Run 배포)
+- [x] 최초 배포 후 실제 헬스체크 — 배포된 URL(`https://ai-chat-cl2nse2tnq-du.a.run.app`)에서 브라우저로 메시지를 보내 Claude 응답(마크다운 렌더링 포함)과 MongoDB 연결까지 전부 정상 동작함을 확인
 
 ## 10단계 — 코드 리뷰로 발견된 구현 공백 (2026-08-29 실사용 QA 중 발견)
 
