@@ -1,0 +1,89 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// requirements.md §5 ER 다이어그램 기준
+
+model Employee {
+  employeeId String   @id @map("employee_id")
+  name       String
+  department String
+  position   String
+  managerId  String?  @map("manager_id")
+  hireDate   DateTime @map("hire_date")
+
+  // 하급자가 있는 사원은 삭제할 수 없다 (TC-EMP-008)
+  manager      Employee?  @relation("EmployeeManager", fields: [managerId], references: [employeeId], onDelete: Restrict)
+  subordinates Employee[] @relation("EmployeeManager")
+
+  customers    Customer[]
+  dailyReports DailyReport[]
+  comments     Comment[]
+
+  @@map("employees")
+}
+
+model Customer {
+  customerId  String  @id @map("customer_id")
+  companyName String  @map("company_name")
+  contactName String  @map("contact_name")
+  phone       String
+  address     String?
+  salesRepId  String  @map("sales_rep_id")
+
+  salesRep     Employee      @relation(fields: [salesRepId], references: [employeeId])
+  visitRecords VisitRecord[]
+
+  @@map("customers")
+}
+
+model DailyReport {
+  reportId   String   @id @map("report_id")
+  employeeId String   @map("employee_id")
+  reportDate DateTime @map("report_date")
+  problem    String?
+  plan       String?
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  employee     Employee      @relation(fields: [employeeId], references: [employeeId])
+  visitRecords VisitRecord[]
+  comments     Comment[]
+
+  // 요구사항 3.3: 영업사원 + 보고일자 단위로 유일
+  @@unique([employeeId, reportDate])
+  @@map("daily_reports")
+}
+
+model VisitRecord {
+  visitId      String @id @map("visit_id")
+  reportId     String @map("report_id")
+  customerId   String @map("customer_id")
+  visitContent String @map("visit_content")
+  sequence     Int
+
+  // 일일 보고 삭제 시 방문 내역도 함께 삭제 (TC-RPT-013)
+  report   DailyReport @relation(fields: [reportId], references: [reportId], onDelete: Cascade)
+  customer Customer    @relation(fields: [customerId], references: [customerId])
+
+  @@map("visit_records")
+}
+
+model Comment {
+  commentId String   @id @map("comment_id")
+  reportId  String   @map("report_id")
+  authorId  String   @map("author_id")
+  content   String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  // 일일 보고 삭제 시 댓글도 함께 삭제 (TC-RPT-013)
+  report DailyReport @relation(fields: [reportId], references: [reportId], onDelete: Cascade)
+  author Employee    @relation(fields: [authorId], references: [employeeId])
+
+  @@map("comments")
+}
